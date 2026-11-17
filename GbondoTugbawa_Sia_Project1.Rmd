@@ -1,0 +1,337 @@
+---
+title: "Project_1"
+author: "Sia Gbondo-Tugbawa"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+echo = FALSE,
+warning = FALSE,
+message = FALSE
+)
+```
+# AI Use
+I first wrote my pseudocode. I asked AI if I was missing an steps in my pseudocode and based on what it told me I edited my pseudocode. AI was also used to help figure out which functions to use when and also to help explain different functions used in the course.
+
+# Project Workflow
+
+1. **Import the data**  
+   - Import the patient-level and encounter-level datasets without hardcoding file paths.
+
+2. **Create the analytic dataset**  
+   - Merge the patient-level data into the encounter-level data using MRN as the common identifier.
+   - Confirm that the resulting dataset maintains encounter-level granularity, with each row representing one patient encounter.
+
+3. **Examine the analytic dataset**  
+   - Determine the number of rows and columns.
+   - Review variable names and data types.
+   - Describe the types of information contained in the dataset, including patient demographics, medical history, and encounter-level clinical information.
+
+4. **Assess and clean the data**  
+   - Identify missing values across variables.
+   - Check for implausible or invalid values.
+   - Replace WBC values less than 1 with 1.
+   - Evaluate BMI values for implausible observations.
+   - Evaluate DOB values for implausible dates.
+   - Make appropriate cleaning decisions based on identified issues.
+
+5. **Create a categorical WBC variable**  
+   - Categorize WBC values as:
+     - Low: < 3.2
+     - Normal: 3.2–9.8
+     - High: > 9.8
+     - Not Taken: missing WBC
+   - Set the category order as Low, Normal, High, Not Taken.
+
+6. **Summarize WBC categories**  
+   - Create a frequency table showing the count and percentage of encounters in each WBC category.
+
+7. **Create a patient-level Table 1**  
+   - Use patient-level data to summarize:
+     - Race
+     - Ethnicity
+     - Financial class
+     - Hypertension
+     - Congestive heart failure (CHF)
+     - Diabetes
+   - Report counts and percentages for each variable.
+
+8. **Format and present results**  
+   - Produce professional, clearly labeled tables suitable for the final report.
+   - Ensure tables are formatted appropriately and do not extend onto additional pages unless necessary.
+
+9. **Document data-cleaning decisions**  
+   - Document identified data-quality issues 
+   - Explain how each issue was handled.
+   - Include clear comments throughout the code describing major processing and cleaning steps.
+
+# 1. Load packages
+```{r}
+library(tidyverse)
+library(lubridate)
+library(gt)
+library(gtsummary)
+```
+
+# 2. Import datasets
+```{r}
+# Select PatientData-2.csv first
+patient_data <- read_csv("PatientData-2.csv")
+
+# Select EncounterData-2.csv second
+encounter_data <- read_csv("EncounterData-2.csv")
+
+# Examine original datasets
+glimpse(patient_data)
+glimpse(encounter_data)
+```
+
+# 3. Merge datasets using MRN
+```{r}
+# Keep all encounter records
+analytic_data <- encounter_data %>%
+  left_join(patient_data, by = "MRN",
+            relationship = "many-to-one")
+```
+
+# 4. Examine the analytic dataset
+```{r}
+# Number of rows and columns
+dim(analytic_data)
+nrow(analytic_data)
+ncol(analytic_data)
+
+# Variable names and types
+names(analytic_data)
+glimpse(analytic_data)
+
+# Summary statistics
+summary(analytic_data)
+
+# Check number of unique patients
+n_distinct(analytic_data$MRN)
+```
+
+# 5. Assess missing values
+```{r}
+missing_summary <- analytic_data %>%
+  summarise(across(
+    everything(),
+    ~ sum(is.na(.))
+  )) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Missing_Count"
+  ) %>%
+  mutate(
+    Missing_Percent =
+      round(Missing_Count / nrow(analytic_data) * 100, 2)
+  )
+
+print(missing_summary)
+```
+
+# 6. Convert date variables
+```{r}
+analytic_data <- analytic_data %>%
+  mutate(
+    DOB = mdy(DOB),
+    contact_date = mdy(contact_date)
+  )
+
+patient_data <- patient_data %>%
+  mutate(DOB = mdy(DOB))
+```
+
+# 7. Identify implausible DOB values
+```{r}
+# Calculate age at each encounter
+analytic_data <- analytic_data %>%
+  mutate(
+    age_at_encounter =
+      time_length(interval(DOB, contact_date), "years"),
+    DOB_flag = is.na(DOB) |
+      is.na(contact_date) |
+      age_at_encounter < 0 |
+      age_at_encounter > 120
+  )
+
+# Review flagged DOB records
+analytic_data %>%
+  filter(DOB_flag) %>%
+  select(MRN, DOB, contact_date,
+         age_at_encounter, DOB_flag)
+```
+
+# 8. Identify implausible BMI values
+```{r}
+# Values below 10 or above 80 are flagged
+# for review, not automatically removed.
+
+analytic_data <- analytic_data %>%
+  mutate(
+    BMI_flag = !is.na(BMI) &
+      (BMI < 10 | BMI > 80)
+  )
+
+# Review flagged BMI records
+analytic_data %>%
+  filter(BMI_flag) %>%
+  select(MRN, contact_date, BMI, BMI_flag)
+```
+
+# 9. Clean WBC values
+```{r}
+# Preserve original WBC for documentation
+analytic_data <- analytic_data %>%
+  mutate(
+    WBC_original = WBC,
+    WBC = if_else(
+      !is.na(WBC) & WBC < 1,
+      1,
+      WBC
+    )
+  )
+
+# Count how many WBC values were changed
+analytic_data %>%
+  summarise(
+    WBC_values_changed =
+      sum(!is.na(WBC_original) & WBC_original < 1)
+  )
+```
+
+# 10. Create categorical WBC variable
+```{r}
+analytic_data <- analytic_data %>%
+  mutate(
+    WBC_category = case_when(
+      is.na(WBC) ~ "Not Taken",
+      WBC < 3.2 ~ "Low",
+      WBC <= 9.8 ~ "Normal",
+      WBC > 9.8 ~ "High"
+    ),
+    WBC_category = factor(
+      WBC_category,
+      levels = c(
+        "Low", "Normal", "High", "Not Taken"
+      )
+    )
+  )
+```
+
+# 11. Create WBC frequency table
+```{r}
+# Percentages use all encounters
+wbc_summary <- analytic_data %>%
+  count(WBC_category, .drop = FALSE) %>%
+  mutate(
+    Percentage = round(n / sum(n) * 100, 1)
+  )
+
+print(wbc_summary)
+```
+
+# 12. Format WBC table using gt
+```{r}
+wbc_table <- wbc_summary %>%
+  gt() %>%
+  tab_header(
+    title = "White Blood Cell Count Categories",
+    subtitle = "Distribution Across Patient Encounters"
+  ) %>%
+  cols_label(
+    WBC_category = "WBC Category",
+    n = "Count",
+    Percentage = "Percentage (%)"
+  ) %>%
+  fmt_number(
+    columns = Percentage,
+    decimals = 1
+  )
+
+wbc_table
+```
+
+# 13. Create patient-level Table 1
+```{r}
+# Use the original patient-level dataset
+# to avoid counting patients multiple times.
+
+table1 <- patient_data %>%
+  select(
+    race,
+    ethnicity,
+    financialclass,
+    hypertension,
+    CHF,
+    diabetes
+  ) %>%
+  tbl_summary(
+    statistic = all_categorical() ~ "{n} ({p}%)",
+    missing = "ifany",
+    label = list(
+      race ~ "Race",
+      ethnicity ~ "Ethnicity",
+      financialclass ~ "Financial Class",
+      hypertension ~ "Hypertension",
+      CHF ~ "Congestive Heart Failure",
+      diabetes ~ "Diabetes"
+    )
+  ) %>%
+  modify_header(
+    label ~ "**Characteristic**",
+    all_stat_cols() ~ "**N = {N}**"
+  ) %>%
+  bold_labels()
+
+# Display Table 1
+table1
+```
+
+# 14. Convert Table 1 to gt
+```{r}
+table1_gt <- as_gt(table1)
+
+table1_gt
+
+# 15. Summarize cleaning decisions
+cleaning_summary <- analytic_data %>%
+  summarise(
+    Total_Encounters = n(),
+    Unique_Patients = n_distinct(MRN),
+    WBC_Values_Replaced =
+      sum(!is.na(WBC_original) & WBC_original < 1),
+    Missing_WBC = sum(is.na(WBC)),
+    Missing_BMI = sum(is.na(BMI)),
+    Flagged_BMI = sum(BMI_flag),
+    Flagged_DOB = sum(DOB_flag)
+  )
+
+print(cleaning_summary)
+```
+
+# 16. Check final analytic dataset
+```{r}
+glimpse(analytic_data)
+summary(analytic_data)
+```
+
+# 17. Record R and package versions
+```{r}
+R.version.string
+packageVersion("dplyr")
+packageVersion("lubridate")
+packageVersion("gt")
+packageVersion("gtsummary")
+
+```
+
+The analytic dataset was created by merging the patient-level dataset with the encounter-level dataset using MRN. Each row represents a single patient encounter, so individual patients may contribute multiple observations.  
+
+The dataset contains 550 rows and 14 variables. Variables include demographic characteristics (race, ethnicity, financial class), comorbid conditions (hypertension, CHF, diabetes), encounter information (date and type of encounter), and clinical measures such as BMI, temperature, distress score, and white blood cell count.
+
+Missing values were assessed for all variables. Dates of birth that resulted in implausible ages (<0 or >120 years) were flagged for review. BMI values below 10 or above 80 were flagged as potentially implausible but were not modified. In accordance with the project instructions, WBC values below 1 were replaced with 1 because they were below the limit of detection.
